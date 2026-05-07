@@ -89,6 +89,9 @@ def parse_ns3_time(s):
 
 
 # ── Parse one flowmon.xml → list of flow dicts ─
+# FIX 1: Flows 1-3 are NS3 internal routing flows with rxPackets=0.
+# The actual UDP data flows have higher IDs (4, 5, 6...).
+# We silently skip any flow with rxPackets=0 — no [SKIP] noise printed.
 def parse_flowmon(xml_path):
     tree  = etree.parse(xml_path)
     flows = []
@@ -96,9 +99,12 @@ def parse_flowmon(xml_path):
         rx_pkts = int(flow.get("rxPackets", "0"))
         tx_pkts = int(flow.get("txPackets", "0"))
         fid     = flow.get("flowId", "?")
+
+        # Silently skip flows with no received packets
+        # (these are NS3 internal/routing flows, not our UDP data flows)
         if rx_pkts == 0:
-            print(f"  [SKIP] Flow {fid}: no received packets")
             continue
+
         delay_sum    = parse_ns3_time(flow.get("delaySum", "0ns"))
         avg_delay_ms = (delay_sum / rx_pkts) * 1e3
         rx_bytes     = int(flow.get("rxBytes", "0"))
@@ -107,6 +113,8 @@ def parse_flowmon(xml_path):
         duration     = t_last_rx - t_first_tx
         tput_kbps    = (rx_bytes * 8) / duration / 1e3 if duration > 0 else 0.0
         loss_pct     = ((tx_pkts - rx_pkts) / tx_pkts * 100) if tx_pkts > 0 else 0.0
+
+        # Use a clean client label (Flow 4 → Client 0, Flow 5 → Client 1, etc.)
         flows.append({
             "id":    fid,
             "delay": avg_delay_ms,
@@ -160,7 +168,7 @@ if args.compare or len(experiments) > 1:
         sys.exit("[ERROR] No flows with received packets found in any experiment.")
 
     base_flows  = all_data[list(all_data.keys())[0]]
-    flow_labels = [f"Flow {f['id']}" for f in base_flows]
+    flow_labels = [f"Client {i}" for i in range(len(base_flows))]
     x           = np.arange(len(flow_labels))
     n           = len(all_data)
     width       = 0.7 / n
@@ -194,7 +202,11 @@ if args.compare or len(experiments) > 1:
         ax.grid(axis='y', linestyle='--', alpha=0.4)
 
     axes[0].legend(fontsize=7, loc='upper left')
-    plt.tight_layout()
+
+    # FIX 2: use subplots_adjust instead of tight_layout to avoid
+    # the "Axes not compatible with tight_layout" UserWarning
+    plt.subplots_adjust(left=0.06, right=0.98, top=0.88, bottom=0.15, wspace=0.35)
+
     out_png = os.path.join(RESULTS_DIR, "plot_delay_comparison.png")
     plt.savefig(out_png, dpi=150, bbox_inches='tight')
     print(f"[INFO] Saved: {out_png}")
@@ -210,15 +222,17 @@ else:
     flows = parse_flowmon(xml_path)
 
     if not flows:
-        sys.exit("[ERROR] No flows with received packets found in flowmon.xml.")
+        sys.exit("[ERROR] No active data flows found in flowmon.xml.")
 
     flow_ids    = [f["id"]    for f in flows]
     avg_delays  = [f["delay"] for f in flows]
     throughputs = [f["tput"]  for f in flows]
     loss_ratios = [f["loss"]  for f in flows]
-    x_labels    = [f"Flow {fid}" for fid in flow_ids]
-    x_pos       = range(len(flow_ids))
-    color       = meta["color"]
+
+    # Use clean client labels instead of raw NS3 flow IDs
+    x_labels = [f"Client {i}" for i in range(len(flows))]
+    x_pos    = range(len(flows))
+    color    = meta["color"]
 
     print(f"[INFO] {len(flows)} active flows  |  "
           f"max delay = {max(avg_delays):.2f} ms  |  "
@@ -239,14 +253,18 @@ else:
                     fmt.format(val),
                     ha='center', va='bottom', fontsize=8)
 
-    # Slightly lighter shade for variety across the 3 bar charts
     colors_panels = [color, "#55A868", "#DD8452"]
 
     fig = plt.figure(figsize=(14, 10))
-    fig.suptitle(meta["title"] + "\n" + meta["subtitle"],
-                 fontsize=11, fontweight='bold', y=1.01)
 
-    gs = gridspec.GridSpec(2, 2, figure=fig, hspace=0.52, wspace=0.38)
+    # FIX 2: use suptitle with manual y, then subplots_adjust instead of tight_layout
+    fig.suptitle(meta["title"] + "\n" + meta["subtitle"],
+                 fontsize=11, fontweight='bold', y=0.98)
+
+    gs = gridspec.GridSpec(2, 2, figure=fig,
+                           hspace=0.52, wspace=0.38,
+                           top=0.88, bottom=0.08,
+                           left=0.08, right=0.97)
 
     # Panel 1 — Average delay
     bar_chart(fig.add_subplot(gs[0, 0]),
@@ -269,11 +287,11 @@ else:
     ax4 = fig.add_subplot(gs[1, 1])
     ax4.axis('off')
     table_data = [
-        [f"Flow {fid}",
+        [f"Client {i}",
          f"{d:.2f} ms",
          f"{t:.1f} kbps",
          f"{l:.1f}%"]
-        for fid, d, t, l in zip(flow_ids, avg_delays, throughputs, loss_ratios)
+        for i, (d, t, l) in enumerate(zip(avg_delays, throughputs, loss_ratios))
     ]
     tbl = ax4.table(
         cellText=table_data,
@@ -292,7 +310,6 @@ else:
 
     ax4.set_title("Summary Table", fontsize=10, fontweight='bold', pad=12)
 
-    plt.tight_layout()
     out_png = os.path.join(RESULTS_DIR, tag, "delay_analysis.png")
     plt.savefig(out_png, dpi=150, bbox_inches='tight')
     print(f"[INFO] Saved: {out_png}")
