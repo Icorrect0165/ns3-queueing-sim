@@ -1,5 +1,5 @@
 # NS3 Queueing Theory Simulation
-### Assignment 3 — Network Simulation & Queueing Analysis
+### Network Simulation & Queueing Analysis
 
 ---
 
